@@ -237,6 +237,89 @@ BEGIN
 END;
 GO
 
+-------------------------------
+--THỦ TỤC CẬP NHẬT TRẠNG THÁI--
+-------------------------------
+CREATE OR ALTER PROC SP_CapNhatTrangThaiBaoTri
+AS
+BEGIN
+    DECLARE @Now DATETIME = GETDATE();
+    DECLARE @Today DATE = CAST(@Now AS DATE);
+    --1️.Cập nhật trạng thái lịch bảo trì
+    --Trong khoảng thời gian bảo trì → chuyển sang "Đang thực hiện"
+    UPDATE L
+    SET L.MaTrangThaiBT = 'BTT02'
+    FROM LICH_BAO_TRI L
+    WHERE L.MaTrangThaiBT <> 'BTT04' -- không đụng tới lịch đã hủy
+      AND @Today BETWEEN L.NgayBatDau AND L.NgayKetThuc
+
+    --Đã qua ngày kết thúc → chuyển sang "Đã hoàn thành"
+    UPDATE L
+    SET L.MaTrangThaiBT = 'BTT03'
+    FROM LICH_BAO_TRI L
+    WHERE L.MaTrangThaiBT NOT IN ('BTT03', 'BTT04')
+      AND @Today > L.NgayKetThuc;
+
+    --2️.Cập nhật trạng thái phòng
+    --Nếu có lịch bảo trì đang thực hiện → đặt phòng thành "Đang bảo trì" (TT002)
+    UPDATE P
+    SET P.MaTrangThai = 'TT002'
+    FROM PHONG P
+    WHERE EXISTS (
+        SELECT 1
+        FROM LICH_BAO_TRI L
+        WHERE L.MaPhong = P.MaPhong
+          AND L.MaTrangThaiBT = 'BTT02'
+    );
+
+    --Nếu không có lịch bảo trì đang thực hiện → trả lại "Sẵn sàng sử dụng" (TT001)
+    UPDATE P
+    SET P.MaTrangThai = 'TT001'
+    FROM PHONG P
+    WHERE P.MaTrangThai = 'TT002'
+      AND NOT EXISTS (
+          SELECT 1
+          FROM LICH_BAO_TRI L
+          WHERE L.MaPhong = P.MaPhong
+            AND L.MaTrangThaiBT = 'BTT02'
+      );
+END;
+GO
+
+CREATE OR ALTER PROC SP_CapNhatTrangThaiPhong
+AS
+BEGIN
+    DECLARE @Now DATETIME = GETDATE();
+    DECLARE @Today DATE = CAST(@Now AS DATE);
+    DECLARE @TimeNow TIME = CAST(@Now AS TIME);
+
+    -- 1.Đổi trạng thái phòng sang "Đang có người sử dụng" (TT003)
+    UPDATE P
+    SET P.MaTrangThai = 'TT003'
+    FROM PHONG P
+    WHERE EXISTS (
+        SELECT 1
+        FROM CHITIET_PHIEUDANGKY C
+        WHERE C.MaPhong = P.MaPhong
+          AND C.NgaySuDung = @Today
+          AND @TimeNow BETWEEN C.GioBatDau AND C.GioKetThuc
+    );
+
+    -- 2.Đổi lại trạng thái "Sẵn sàng sử dụng" (TT001) cho các phòng hết giờ hoặc không đăng ký
+    UPDATE P
+    SET P.MaTrangThai = 'TT001'
+	FROM PHONG P
+    WHERE P.MaTrangThai = 'TT003'
+      AND NOT EXISTS (
+          SELECT 1
+          FROM CHITIET_PHIEUDANGKY C
+          WHERE C.MaPhong = P.MaPhong
+            AND C.NgaySuDung = @Today
+            AND @TimeNow BETWEEN C.GioBatDau AND C.GioKetThuc
+      );
+END;
+GO
+
 --EXEC--
 EXEC SP_TinhGioSuDungTheoNV 'NV001'
 EXEC SP_TinhSoLanSuDungTheoDonVi 'DV02' , 10, 2025
@@ -258,3 +341,6 @@ EXEC SP_TimPhongTrong
      @GioBatDau = '09:00',
      @GioKetThuc = '11:00',
      @SoNguoi = 20;
+
+EXEC SP_CapNhatTrangThaiBaoTri
+EXEC SP_CapNhatTrangThaiPhong
